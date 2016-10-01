@@ -12,21 +12,18 @@ use x86::bits64::irq::IdtEntry;
 
 use core::intrinsics;
 
-macro_rules! make_idt_entry {
-    ($number:expr) => {{
-        unsafe extern fn handler() {
-//            kprintln!("unhandled interrupt #{}", $number);
-        }
+static mut IDT: [IdtEntry; 256] = [IdtEntry::MISSING; 256];
 
-        IdtEntry::new(handler)
-    }};
-    ($name:ident, $body:expr) => {{
-        fn body() {
-            $body
-        }
+pub struct IdtRef {
+    ptr: DescriptorTablePointer<IdtEntry>,
+    idt: &'static [IdtEntry; 256],
+}
 
+impl IdtRef {
+    fn set_entry(&mut self, number: usize, body: fn()) {
+        let body = body as usize;
         #[naked]
-        unsafe extern fn $name() {
+        unsafe extern fn name() {
             asm!("push rbp
                   push r15
                   push r14
@@ -66,47 +63,41 @@ macro_rules! make_idt_entry {
             intrinsics::unreachable();
         }
 
-		use x86::shared::paging::VAddr;
-		use x86::shared::PrivilegeLevel;
+        use x86::shared::paging::VAddr;
+        use x86::shared::PrivilegeLevel;
 
-		let handler = VAddr::from_usize($name as usize);
+        let handler = VAddr::from_usize(name as usize);
 
-		// last is "block", idk
-		IdtEntry::new(handler, 0x8, PrivilegeLevel::Ring0, false)
-    }};
-}
+        // last is "block", idk
+        let entry = IdtEntry::new(handler, 0x8, PrivilegeLevel::Ring0, false);
 
-static mut IDT: [IdtEntry; 256] = [IdtEntry::MISSING; 256];
-
-pub struct IdtRef {
-    ptr: DescriptorTablePointer<IdtEntry>,
+        self.idt[number] = entry;
+    }
 }
 
 pub fn idt_ref() -> IdtRef {
 	// accessing the static mut idt
-	let r = unsafe {
+	let mut r = unsafe {
 		IdtRef {
 			ptr: DescriptorTablePointer::new_idtp(&IDT[..]),
+            idt: &IDT,
 		}
 	};
 
-	let gpf = make_idt_entry!(isr13, {
+	fn isr13() {
 		panic!("omg GPF");
-	});
+	};
 
-    let timer = make_idt_entry!(isr32, {
+    fn isr32() {
         pic::eoi_for(32);
 
         unsafe {
             x86::shared::irq::enable();
         }
-    });
+    };
 
-	// accessing the static mut idt
-	unsafe {
-		IDT[13] = gpf;
-        IDT[32] = timer;
-	}
+    r.set_entry(13, isr13);
+    r.set_entry(32, isr32);
 
     // this block is safe because we've constructed a proper IDT above.
     unsafe {
